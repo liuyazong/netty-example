@@ -1,26 +1,27 @@
-# netty example
-# 构建ServerBootstrap
+# netty
+## 构建Server
 
     //用于处理业务操作
     ExecutorService executorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() << 1);
     
     //构建ServerBootstrap实例
     ServerBootstrap bootstrap = new ServerBootstrap()
-            .group(new NioEventLoopGroup(), new NioEventLoopGroup(Runtime.getRuntime().availableProcessors() << 1))
+            .group(new NioEventLoopGroup(), new NioEventLoopGroup())
             .channel(NioServerSocketChannel.class)
-            .option(ChannelOption.SO_BACKLOG, 1024)
+            .option(ChannelOption.SO_BACKLOG, 2 << 9)
             .childOption(ChannelOption.SO_KEEPALIVE, true)
             .childOption(ChannelOption.TCP_NODELAY, true)
             .handler(new LoggingHandler(LogLevel.DEBUG))
-            .childHandler(new ChannelInitializer<NioSocketChannel>() {
+            .childHandler(new ChannelInitializer<Channel>() {
                 @Override
-                protected void initChannel(NioSocketChannel ch) throws Exception {
+                protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline()
-                            .addLast(LengthFieldBasedFrameDecoder.class.getName(), new LengthFieldBasedFrameDecoder(1024, 0, 2, 0, 2))
-                            .addLast(StringDecoder.class.getName(), new StringDecoder(Charset.defaultCharset()))
-                            .addLast(LengthFieldPrepender.class.getName(), new LengthFieldPrepender(2, 0))
-                            .addLast(StringEncoder.class.getName(), new StringEncoder(Charset.defaultCharset()))
-                            .addLast(SimpleChannelInboundHandler.class.getName(), new SimpleChannelInboundHandler<String>() {
+                            .addLast(new LoggingHandler(LogLevel.DEBUG))
+                            .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 2, 0, 2))
+                            .addLast(new StringDecoder(Charset.defaultCharset()))
+                            .addLast(new LengthFieldPrepender(2, 0))
+                            .addLast(new StringEncoder(Charset.defaultCharset()))
+                            .addLast(new SimpleChannelInboundHandler<String>() {
     
                                 @Override
                                 protected void channelRead0(ChannelHandlerContext ctx, String msg) throws Exception {
@@ -30,6 +31,7 @@
                                         log.info("handle msg: {}, result: {}", msg, s);
                                         return s;
                                     }).get();
+    
                                     ctx.writeAndFlush(result)
                                             .addListener(future -> {
                                                 log.info("send msg: {}", result);
@@ -55,11 +57,11 @@
 
 3. AbstractBootstrap.option(ChannelOption<T> option, T value)
 
-    设置server端的tcp参数，如ChannelOption.SO_BACKLOG，具体有哪些参数可以看ChannelOption
+    设置服务端socket的tcp参数，如ChannelOption.SO_BACKLOG，具体有哪些参数可以看ChannelOption
 
 4. ServerBootstrap.childOption(ChannelOption<T> childOption, T value)
 
-    设置用户客户端链接的tcp参数，如ChannelOption.SO_KEEPALIVE，具体有哪些参数可以看ChannelOption
+    设置用户客户端socket的tcp参数，如ChannelOption.SO_KEEPALIVE，具体有哪些参数可以看ChannelOption
 
 5. AbstractBootstrap.handler(ChannelHandler handler)
     
@@ -69,23 +71,19 @@
 
     设置用于处理客户端读、写、编解码的ChannelHandler
 
-# ServerBootstrap.group
+下面主要对group、channel、handler、childHandler四个方法进行说明
 
-NioEventLoopGroup、NioEventLoop
+### group
+
+该方法在ServerBootstrap类中实现，有两个参数，都是NioEventLoopGroup的实例。其中，parentGroup处理Tcp链接请求，并将链接交给childGroup处理；childGroup处理Tcp链接上的通信，如读、写、编解码等。
+
+Netty的Reactor线程模型也是在这里实现的。
+
+### NioEventLoopGroup
 
 ![NioEventLoopGroup](NioEventLoopGroup.png)
 
-![NioEventLoop](NioEventLoop.png)
-
-从图中可以看出，
-
-NioEventLoopGroup实现了ScheduledExecutorService接口，即它是一个线程池。
-
-NioEventLoop重写了AbstractExecutorService抽象类中关于线程池的方法，即它也是一个线程池。
-
-从NioEventLoopGroup的构造器public NioEventLoopGroup(int nThreads)跟踪代码，最终会看到以下代码。
-
-默认情况下，nThreads = cpu核心数的两倍（示例程序传入了参数，所以这里不是默认值。对于parentGroup，是1；对于childGroup，是cpu核心数左移一位），executor = null， chooserFactory = new DefaultSelectStrategyFactory()。
+从NioEventLoopGroup的无参构造器跟踪代码，最终会看到以下代码。其中，nThreads = cpu核心数 * 2，executor = null， chooserFactory = new DefaultSelectStrategyFactory()，args先不管。
 
     protected MultithreadEventExecutorGroup(int nThreads, Executor executor,
                                             EventExecutorChooserFactory chooserFactory, Object... args) {
@@ -143,7 +141,7 @@ NioEventLoop重写了AbstractExecutorService抽象类中关于线程池的方法
                 }
             }
         };
-        //为EventExecutor数组中每一个NioEventLoop实例添加一个listener
+        //为EventExecutor数组中每一个NioEventLoop实例添加关闭时的listener
         for (EventExecutor e: children) {
             e.terminationFuture().addListener(terminationListener);
         }
@@ -153,7 +151,29 @@ NioEventLoop重写了AbstractExecutorService抽象类中关于线程池的方法
         readonlyChildren = Collections.unmodifiableSet(childrenSet);
     }
 
-看一下newChild这个方法
+从图中可以看出，NioEventLoopGroup实现了ScheduledExecutorService、ExecutorService、Executor，这三个接口都是jdk线程池的接口，所以它是一个线程池，但是这个线程池是没有任务队列的，其关于线程池的execute、submit、scheduleXXX、invokeXXX方法都在其抽象父类AbstractEventExecutorGroup中做了实现。
+
+以线程池最核心的execute方法为例。
+    
+    @Override
+    public void execute(Runnable command) {
+        next().execute(command);
+    }
+
+next方法在MultithreadEventExecutorGroup中实现。
+
+    @Override
+    public EventExecutor next() {
+        return chooser.next();
+    }
+
+它使用构造NioEventLoopGroup实例时创建的EventExecutorChooser从NioEventLoop数组中选取一个NioEventLoop实例。也就是说，execute方法提交的任务最终都交给了NioEventLoop来执行，submit、scheduleXXX、invokeXXX方法也是同样的套路。
+
+### NioEventLoop
+
+![NioEventLoop](NioEventLoop.png)
+
+再来看一下前面构造NioEventLoopGroup实例时调用的newChild方法
 
     # NioEventLoopGroup.newChild
     @Override
@@ -162,13 +182,58 @@ NioEventLoop重写了AbstractExecutorService抽象类中关于线程池的方法
             ((SelectStrategyFactory) args[1]).newSelectStrategy(), (RejectedExecutionHandler) args[2]);
     }
 
-在NioEventLoop的构造器参数中，this = 当前正在创建的NioEventLoopGroup实例的引用，executor就是刚刚创建的ThreadPerTaskExecutor实例，后面几个参数也都是从前面传入的。
+其中，this = 当前正在创建的NioEventLoopGroup实例的引用，executor就是刚刚创建的ThreadPerTaskExecutor实例。
 
-NioEventLoopGroup实例内有一组NioEventLoop的实例；而每个NioEventLoop都持有一个NioEventLoopGroup的引用。
+到这里就可以看出NioEventLoop与NioEventLoopGroup的关系了：
 
-查看NioEventLoopGroup的父类AbstractEventExecutorGroup发现，这个类实中submit、schedule、scheduleAtFixedRate、scheduleWithFixedDelay、invokeAny、invokeAny、execute方法都将通选择策略从NioEventLoop数组中选取一个元素来执行相应的任务。
+* NioEventLoopGroup实例内有一组NioEventLoop的实例
+* 而每个NioEventLoop都持有一个NioEventLoopGroup的引用
 
-NioEventLoop
+从图中可以看出NioEventLoop也实现了java线程池的ScheduledExecutorService、ExecutorService、Executor接口；并且它还继承了AbstractExecutorService，这个是jdk线程池的抽象实现。所以它也是一个线程池。
+
+* execute方法在SingleThreadEventExecutor中实现
+* submit方法在AbstractEventExecutor中实现，它直接调用了父类AbstractExecutorService的submit方法
+* scheduleXXX方法在AbstractScheduledEventExecutor中实现
+* invokeXXX方法在SingleThreadEventExecutor中实现，校验是否在Netty的IO线程内调用，如果是，抛出异常；否则直接使用父类AbstractExecutorService的实现。也就是说在Netty的IO线程内调用invokeXXX方法是不被支持的。
+
+
+在NioEventLoop的构造器参数中，parent = 当前正在创建的NioEventLoopGroup实例的引用，executor就是刚刚创建的ThreadPerTaskExecutor实例。
+
+    NioEventLoop(NioEventLoopGroup parent, Executor executor, SelectorProvider selectorProvider,
+                 SelectStrategy strategy, RejectedExecutionHandler rejectedExecutionHandler) {
+        super(parent, executor, false, DEFAULT_MAX_PENDING_TASKS, rejectedExecutionHandler);
+        if (selectorProvider == null) {
+            throw new NullPointerException("selectorProvider");
+        }
+        if (strategy == null) {
+            throw new NullPointerException("selectStrategy");
+        }
+        provider = selectorProvider;
+        final SelectorTuple selectorTuple = openSelector();
+        selector = selectorTuple.selector;
+        unwrappedSelector = selectorTuple.unwrappedSelector;
+        selectStrategy = strategy;
+    }
+    
+    protected SingleThreadEventLoop(EventLoopGroup parent, Executor executor,
+                                    boolean addTaskWakesUp, int maxPendingTasks,
+                                    RejectedExecutionHandler rejectedExecutionHandler) {
+        super(parent, executor, addTaskWakesUp, maxPendingTasks, rejectedExecutionHandler);
+        tailTasks = newTaskQueue(maxPendingTasks);
+    }
+    
+    protected SingleThreadEventExecutor(EventExecutorGroup parent, Executor executor,
+                                        boolean addTaskWakesUp, int maxPendingTasks,
+                                        RejectedExecutionHandler rejectedHandler) {
+        super(parent);
+        this.addTaskWakesUp = addTaskWakesUp;
+        this.maxPendingTasks = Math.max(16, maxPendingTasks);
+        this.executor = ObjectUtil.checkNotNull(executor, "executor");
+        taskQueue = newTaskQueue(this.maxPendingTasks);
+        rejectedExecutionHandler = ObjectUtil.checkNotNull(rejectedHandler, "rejectedHandler");
+    }
+    
+看看它的execute方法，这个方法留在后面进行说明。
 
     @Override
     public void execute(Runnable task) {
@@ -189,31 +254,53 @@ NioEventLoop
             wakeup(inEventLoop);
         }
     }
-
-# AbstractBootstrap.channel(Class<? extends C> channelClass)
-
-这里会创建一个ReflectiveChannelFactory实例，对于服务端，它创建NioServerSocketChannel实例；对于客户端，它创建NioSocketChannel实例
     
-# AbstractBootstrap.option(ChannelOption<T> option, T value)
-# ServerBootstrap childOption(ChannelOption<T> childOption, T value)
+addTaskWakesUp由构造器传入，值为false
+ 
+wakesUpForTask方法在其子类SingleThreadEventLoop中进行了重写
+    
+    @Override
+    protected boolean wakesUpForTask(Runnable task) {
+        return !(task instanceof NonWakeupRunnable);
+    }
 
-设置ServerSocketChannel与SocketChannel的属性。
+wakeup方法在其子类NioEventLoop中进行了重写
 
-具体可以设置哪些属性，看ChannelOption类。
+    @Override
+    protected void wakeup(boolean inEventLoop) {
+        if (!inEventLoop && wakenUp.compareAndSet(false, true)) {
+            selector.wakeup();
+        }
+    }
 
-# AbstractBootstrap.handler(ChannelHandler handler)
 
-用于处理ServerSocketChannel。
+### channel
 
-# ServerBootstrap.childHandler(ChannelHandler childHandler)
+该方法在AbstractBootstrap中实现。这里会创建一个ReflectiveChannelFactory实例，这个方法通过反射创建Channel实例。
+具体过程会在后面真正创建Channel实例时进行说明。
 
-用于处理SocketChannel。后面详细说明这一块。
+### handler
 
-# 启动Server
+该方法在AbstractBootstrap中实现。handler参数用于处理NioServerSocketChannel。
 
-# AbstractBootstrap.bind(SocketAddress localAddress)
+### childHandler
 
-实现两个功能
+该方法在ServerBootstrap中实现。childHandler参数用于处理NioSocketChannel。
+
+## 启动Server
+
+Netty Server端的启动可以使用AbstractBootstrap类的bind方法的几个重载方法来执行。
+以AbstractBootstrap.bind(SocketAddress localAddress)来说明。
+
+    public ChannelFuture bind(SocketAddress localAddress) {
+        validate();
+        if (localAddress == null) {
+            throw new NullPointerException("localAddress");
+        }
+        return doBind(localAddress);
+    }
+
+它调用了doBind方法。
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
         final ChannelFuture regFuture = initAndRegister();
@@ -251,9 +338,9 @@ NioEventLoop
         }
     }
 
-该方法主要分为两个功能。
+该方法主要分为两个功能。主要看initAndRegister(...)和doBind0(...)两个方法。
 
-AbstractBootstrap.initAndRegister()
+### initAndRegister
 
     final ChannelFuture initAndRegister() {
         Channel channel = null;
@@ -294,7 +381,9 @@ AbstractBootstrap.initAndRegister()
         return regFuture;
     }
     
-# channel = channelFactory.newChannel();
+### 创建channel
+
+channel = channelFactory.newChannel();
 
 这里使用反射技术调用了NioServerSocketChannel的默认构造方法
 
@@ -303,6 +392,21 @@ AbstractBootstrap.initAndRegister()
     }
 
 newSocket(DEFAULT_SELECTOR_PROVIDER)返回了一个Java Nio的ServerSocketChannel实例。
+
+    private static ServerSocketChannel newSocket(SelectorProvider provider) {
+        try {
+            /**
+             *  Use the {@link SelectorProvider} to open {@link SocketChannel} and so remove condition in
+             *  {@link SelectorProvider#provider()} which is called by each ServerSocketChannel.open() otherwise.
+             *
+             *  See <a href="https://github.com/netty/netty/issues/2308">#2308</a>.
+             */
+            return provider.openServerSocketChannel();
+        } catch (IOException e) {
+            throw new ChannelException(
+                    "Failed to open a server socket.", e);
+        }
+    }
 
 继续往深挖
 
@@ -313,6 +417,10 @@ newSocket(DEFAULT_SELECTOR_PROVIDER)返回了一个Java Nio的ServerSocketChanne
 
 这里的ServerSocketChannel就是Java NIO的ServerSocketChannel。创建了一个NioServerSocketChannelConfig，将netty的NioServerSocketChannel实例与java的ServerSocket包装进去。
 
+    protected AbstractNioMessageChannel(Channel parent, SelectableChannel ch, int readInterestOp) {
+        super(parent, ch, readInterestOp);
+    }
+    
 再挖，看super(null, channel, SelectionKey.OP_ACCEPT);
 
 这里parent == null，readInterestOp == SelectionKey.OP_ACCEPT。然后配置ServerSocketChannel为非阻塞。
@@ -337,8 +445,7 @@ newSocket(DEFAULT_SELECTOR_PROVIDER)返回了一个Java Nio的ServerSocketChanne
         }
     }
 
-还挖，看super(parent);，这里创建了NioMessageUnsafe实例、DefaultChannelPipeline实例、ChannelId实例。并且DefaultChannelPipeline通过持有一个当前所创建的channel引用进行关联，也就是channel和pipeline是互相持有的。
-实质上DefaultChannelPipeline是一个双向链表，链表元素是AbstractChannelHandlerContext的实例。
+还挖，看super(parent);，这里创建了NioMessageUnsafe实例、DefaultChannelPipeline实例、ChannelId实例。并且DefaultChannelPipeline通过持有一个当前所创建的channel引用进行关联。
 
     protected AbstractChannel(Channel parent) {
         this.parent = parent;
@@ -383,11 +490,17 @@ newSocket(DEFAULT_SELECTOR_PROVIDER)返回了一个Java Nio的ServerSocketChanne
 
 HeadContext、TailContext都继承了AbstractChannelHandlerContext。
 
-HeadContext是outbound的。TailContext是inbound的。
+HeadContext是outbound的、也是inbound的。TailContext是inbound的。
 
-AbstractChannelHandlerContext是一个双向链表，DefaultChannelPipeline持有双向链表的头节点、尾节点。
+AbstractChannelHandlerContext持有pipeline的引用。
 
-# ServerBootstrap.init(channel);
+AbstractChannelHandlerContext是一个双向链表，而pipeline持有双向链表的头节点、尾节点的引用。
+
+channel、pipeline互相持有对方的一个引用。
+
+### 初始化channel
+
+ServerBootstrap.init(channel);
 
     @Override
     void init(Channel channel) throws Exception {
@@ -452,6 +565,7 @@ AbstractChannelHandlerContext是一个双向链表，DefaultChannelPipeline持�
         final AbstractChannelHandlerContext newCtx;
         synchronized (this) {
             checkMultiplicity(handler);
+            //new DefaultChannelHandlerContext(this, childExecutor(group), name, handler);
             //创建DefaultChannelHandlerContext实例，并将handler、pipeline与其相关联，即它持有了当前添加的handler以及当前pipeline的引用
             newCtx = newContext(group, filterName(name, handler), handler);
 
@@ -463,7 +577,7 @@ AbstractChannelHandlerContext是一个双向链表，DefaultChannelPipeline持�
             // ChannelHandler.handlerAdded(...) once the channel is registered.
             if (!registered) {
                 newCtx.setAddPending();
-                // 第一次调用时registered = false，初始化pendingHandlerCallbackHead属性，即在这里会创建PendingHandlerAddedTask实例，pendingHandlerCallbackHead是一个链表，如果后续还有调用到这里，会在链表尾部追加元素
+                // registered = false，初始化pendingHandlerCallbackHead属性，即在这里会创建PendingHandlerAddedTask实例，pendingHandlerCallbackHead是一个链表，如果后续还有调用到这里，会在链表尾部追加元素
                 // 所以这里就返回了，2、3处对addLast方法的调用也没有在这里执行
                 callHandlerCallbackLater(newCtx, true);
                 return this;
@@ -487,12 +601,29 @@ AbstractChannelHandlerContext是一个双向链表，DefaultChannelPipeline持�
         return this;
     }
 
-这里创建了DefaultChannelHandlerContext实例，并将该实例添加到context双向链表的尾节点tail节点之前。该实例持有ChannelPipeline的实例引用、Channel实例引用。
-然后调用callHandlerAdded0方法，这里会调用之前的initChannel方法。
+这里创建了DefaultChannelHandlerContext实例，并将该实例添加到context双向链表的尾节点tail节点之前。该实例持有ChannelPipeline的实例引用。
+由于当前registered = false，所以会调用callHandlerCallbackLater方法。
 
-2处的addLast
+    private void callHandlerCallbackLater(AbstractChannelHandlerContext ctx, boolean added) {
+        assert !registered;
 
-3处的addLast
+        PendingHandlerCallback task = added ? new PendingHandlerAddedTask(ctx) : new PendingHandlerRemovedTask(ctx);
+        PendingHandlerCallback pending = pendingHandlerCallbackHead;
+        if (pending == null) {
+            pendingHandlerCallbackHead = task;
+        } else {
+            // Find the tail of the linked-list.
+            while (pending.next != null) {
+                pending = pending.next;
+            }
+            pending.next = task;
+        }
+    }
+
+PendingHandlerAddedTask继承了PendingHandlerCallback，实现了Runnable接口，而PendingHandlerCallback是一个单链表。
+参数added = true，会创建一个PendingHandlerAddedTask实例，并把它添加到PendingHandlerCallback单链表中。
+
+2处的addLast、3处的addLast会在后面执行。
 
 将ServerBootstrapAcceptor添加到pipeline。它继承了ChannelInboundHandlerAdapter，包装了通过ServerBootstrap添加的channel、childGroup、childHandler、childOptions、childAttrs，并且添加了一个任务在异常时重新设置channel的config的autoRead属性。
 
@@ -508,11 +639,11 @@ AbstractChannelHandlerContext是一个双向链表，DefaultChannelPipeline持�
     }
 
 
-# ChannelFuture regFuture = config().group().register(channel);
+### 注册channel
 
-这里的group就是parentGroup。
-
-eventLoop就是从parentGroup的EventExecutor数组中选取的其中一个。
+ChannelFuture regFuture = config().group().register(channel);
+ 
+这里的group就是parentGroup，eventLoop就是从parentGroup的EventExecutor数组中选取的其中一个。
 
     @Override
     public final void register(EventLoop eventLoop, final ChannelPromise promise) {
@@ -532,7 +663,7 @@ eventLoop就是从parentGroup的EventExecutor数组中选取的其中一个。
         // 给channel的eventLoop赋值，即将该eventLoop绑定到了channel上
         AbstractChannel.this.eventLoop = eventLoop;
         
-        //currentTHread = main，NioEventLoop.thread = null，所以走else分枝
+        //currentThread = main，NioEventLoop.thread = null，所以走else分枝
         if (eventLoop.inEventLoop()) {
             register0(promise);
         } else {
@@ -553,14 +684,14 @@ eventLoop就是从parentGroup的EventExecutor数组中选取的其中一个。
             }
         }
 
-NioEventLoop的execute方法，将task添加到任务队列
+NioEventLoop的execute方法，将对register0的调用包装为一个task并将其添加到任务队列。*任务*
 
     @Override
     public void execute(Runnable task) {
         if (task == null) {
             throw new NullPointerException("task");
         }
-        // currentTHread = main，NioEventLoop.thread = null，false
+        // currentThread = main，NioEventLoop.thread = null，false
         boolean inEventLoop = inEventLoop();
         // 将任务添加到队列
         addTask(task);
@@ -576,6 +707,8 @@ NioEventLoop的execute方法，将task添加到任务队列
             wakeup(inEventLoop);
         }
     }
+
+由于这里的inEventLoop = false，所以会调用startThread方法
 
     private void startThread() {
         if (state == ST_NOT_STARTED) {
@@ -655,7 +788,7 @@ NioEventLoop的execute方法，将task添加到任务队列
         });
     }
 
-调用了NioEventLoop的run方法，用于nio的事件处理
+这里调用了NioEventLoop的run方法，用于nio的事件处理
 
     @Override
     protected void run() {
@@ -747,7 +880,7 @@ NioEventLoop的execute方法，将task添加到任务队列
         }
     }
 
-上面这块代码会执行刚才添加的任务，即register0方法。
+上面这块代码在else分枝调用runAllTasks方法时才会执行刚才addLast时添加的任务，即register0方法。
 
      private void register0(ChannelPromise promise) {
          try {
@@ -812,7 +945,7 @@ NioEventLoop的execute方法，将task添加到任务队列
         }
     }
 
-这里就开始监听TCP 读 事件了。？？？
+这里就开始监听TCP读事件了
 
 pipeline.invokeHandlerAddedIfNeeded();
 
@@ -826,7 +959,7 @@ pipeline.invokeHandlerAddedIfNeeded();
         }
     }
     
-firstRegistration 默认值true，然后更新为false，也就是只有在第一次调用register0时才会执行callHandlerAddedForAllHandlers方法。callHandlerAddedForAllHandlers就是在执行刚才在addLast方法中创建的pendingHandlerCallbackHead链表中的任务了。
+firstRegistration默认值true，然后更新为false，也就是只有在第一次调用register0时才会执行callHandlerAddedForAllHandlers方法。callHandlerAddedForAllHandlers就是在执行刚才在addLast方法中创建的pendingHandlerCallbackHead链表中的任务了。
 
     private void callHandlerAddedForAllHandlers() {
         final PendingHandlerCallback pendingHandlerCallbackHead;
@@ -887,7 +1020,6 @@ firstRegistration 默认值true，然后更新为false，也就是只有在第�
     }
  
 io.netty.channel.DefaultChannelPipeline.callHandlerAdded0
-
 
      private void callHandlerAdded0(final AbstractChannelHandlerContext ctx) {
          try {
@@ -954,33 +1086,34 @@ io.netty.channel.DefaultChannelPipeline.callHandlerAdded0
     }
 
 调用了ChannelInitializer实例的initChannel方法，该方法以构建ServerBootstrap时传入的handler为参数再一次调用了addLast方法。然后在finally中将ctx从pipeline移除。也就是ChannelInitializer的context不会在pipeline中保留。
+这里开始执行2处的addLast。
 
     @Override
     public final ChannelPipeline addLast(EventExecutorGroup group, String name, ChannelHandler handler) {
         final AbstractChannelHandlerContext newCtx;
         synchronized (this) {
             checkMultiplicity(handler);
-            //创建DefaultChannelHandlerContext实例，并将handler、pipeline与其相关联，即它持有了当前添加的handler以及当前pipeline的引用
+            // 创建DefaultChannelHandlerContext实例，并将handler、pipeline与其相关联，即它持有了当前添加的handler以及当前pipeline的引用
             newCtx = newContext(group, filterName(name, handler), handler);
 
-            //将刚创建的context添加到双向链表的尾节点之前
+            // 将刚创建的context添加到双向链表的尾节点之前
             addLast0(newCtx);
 
             // If the registered is false it means that the channel was not registered on an eventloop yet.
             // In this case we add the context to the pipeline and add a task that will call
             // ChannelHandler.handlerAdded(...) once the channel is registered.
-            // registered = true
+            // 调用register0时，设置了registered = true
             if (!registered) {
                 newCtx.setAddPending();
-                // 第一次调用时registered = false，初始化pendingHandlerCallbackHead属性，即在这里会创建PendingHandlerAddedTask实例，pendingHandlerCallbackHead是一个链表，如果后续还有调用到这里，会在链表尾部追加元素
+                // registered = false，初始化pendingHandlerCallbackHead属性，即在这里会创建PendingHandlerAddedTask实例，pendingHandlerCallbackHead是一个链表，如果后续还有调用到这里，会在链表尾部追加元素
                 // 所以这里就返回了，2、3处对addLast方法的调用也没有在这里执行
                 callHandlerCallbackLater(newCtx, true);
                 return this;
             }
 
-            // 
+            // executor.inEventLoop() = true，所以也不会走这里
             EventExecutor executor = newCtx.executor();
-            if (!executor.inEventLoop()) {// executor.inEventLoop() = true，所以也不会走这里
+            if (!executor.inEventLoop()) {
                 newCtx.setAddPending();
                 executor.execute(new Runnable() {
                     @Override
@@ -997,25 +1130,55 @@ io.netty.channel.DefaultChannelPipeline.callHandlerAdded0
         return this;
     }
 
-到这里server端的handler已经被添加到pipeline中了。
-
-在来看看childHandler是怎么添加到pipeline的。
+2处的addLast之后，会执行以下代码
 
     ch.eventLoop().execute(new Runnable() {
-        @Override
-        public void run() {
-            pipeline.addLast(new ServerBootstrapAcceptor(
-                    ch, currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs));
+                    @Override
+                    public void run() {
+                        // 3
+                        pipeline.addLast(new ServerBootstrapAcceptor(
+                                ch, currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs));
+                    }
+                });
+                
+
+    @Override
+    public void execute(Runnable task) {
+        if (task == null) {
+            throw new NullPointerException("task");
         }
-    });
+
+        // true
+        boolean inEventLoop = inEventLoop();
+        addTask(task);
+        if (!inEventLoop) {
+            startThread();
+            if (isShutdown() && removeTask(task)) {
+                reject();
+            }
+        }
+        
+        if (!addTaskWakesUp && wakesUpForTask(task)) {
+            wakeup(inEventLoop);
+        }
+    }
+    
+这段代码将对3处的addLast的调用包装成一个task添加到任务队列中。 *任务*
     
 ServerBootstrapAcceptor实例的context被添加到双向链表尾节点的前面。
 
-双向链表现在有四个节点，head、logging、acceptor、tail。所有
+双向链表现在有四个节点，head、logging、acceptor、tail。
 
-# AbstractBootstrap.doBind0(regFuture, channel, localAddress, promise);
+head：       HeadContext，                in & out
+logging：    LoggingHandler，             in & out
+acceptor：   ServerBootstrapAcceptor，    in
+tail：       TailContext，                in
 
-AbstractBootstrap.doBind0
+### 绑定地址
+ 
+AbstractBootstrap.doBind0(regFuture, channel, localAddress, promise);
+
+AbstractBootstrap.doBind0，它将对channel.bind方法的调用包装成一个task添加到任务队列。*任务*
 
     private static void doBind0(
             final ChannelFuture regFuture, final Channel channel,
@@ -1083,8 +1246,7 @@ io.netty.channel.AbstractChannelHandlerContext.bind(java.net.SocketAddress, io.n
         return promise;
     }
 
-它从尾节点tail开始向前遍历双向链表，找到第一个不是outbound的context并调用它的invokeBind方法。由于用于处理服务端的handler只有一个LoggingHandler，它既是outbound的、又是inbound的，所以这里会后调用LoggingHandler的context的invokeBind方法，由前面可知，head也是outbound的，然后继续调用head的bind方法。
-依次调用acceptor、logging、head的invokeBind
+它从尾节点tail开始向前遍历双向链表，找到第一个是outbound的context并调用它的invokeBind方法。 所以这里首先会调用LoggingHandler、HeadContext。
 
 
 HeadContext.bind(ChannelHandlerContext ctx, SocketAddress localAddress, ChannelPromise promise)
@@ -1152,12 +1314,28 @@ NioServerSocketChannel.doBind(SocketAddress localAddress)
 
 到这里，javaChannel已经跟localAddress进行了绑定。
 
+invokeLater将对 pipeline.fireChannelActive();的调用包装成task添加到任务队列。*任务*
+
 再来看，pipeline.fireChannelActive();
 
     @Override
     public final ChannelPipeline fireChannelActive() {
         AbstractChannelHandlerContext.invokeChannelActive(head);
         return this;
+    }
+    
+    static void invokeChannelActive(final AbstractChannelHandlerContext next) {
+        EventExecutor executor = next.executor();
+        if (executor.inEventLoop()) {
+            next.invokeChannelActive();
+        } else {
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    next.invokeChannelActive();
+                }
+            });
+        }
     }
 
 它调用了head节点的channelActive方法。
@@ -1169,7 +1347,11 @@ NioServerSocketChannel.doBind(SocketAddress localAddress)
         readIfIsAutoRead();
     }
     
-看看readIfIsAutoRead方法。
+这里的ctx.fireChannelActive();，它pipeline的head开始向后遍历链表，找到第一个inbound的context并调用channelActive方法，所以这里会先后经过head、logging、acceptor、tail节点。
+
+logging、acceptor、tail这三个节点没做什么重要的事。
+
+那就接着看看readIfIsAutoRead方法。
 
 io.netty.channel.DefaultChannelPipeline.HeadContext.readIfIsAutoRead
 
@@ -1220,8 +1402,8 @@ AbstractChannelHandlerContext.read
 
         return this;
     }
-
-再到head节点的read方法
+    
+这里同样是从tail开始遍历链表找outbound的节点，依次为logging、head，logging依然是将调用向下一个节点传递。最终到HeadContext的read方法。
 
 io.netty.channel.DefaultChannelPipeline.HeadContext.read
 
@@ -1273,6 +1455,8 @@ io.netty.channel.nio.AbstractNioChannel.doBeginRead
     }
 
 这里interestOps=0，readInterestOp=OP_ACCEPT，所以这里注册了OP_ACCEPT事件。
+
+到这里地址绑定算完事了。
 
 # processSelectedKeys
 
@@ -1495,3 +1679,5 @@ readBuf里实际上存的时NioSocketChannel对象，它包装了Java Nio的Sock
                 forceClose(child, t);
             }
         }
+
+childGroup.register(child)这里跟前面的config().group().register(channel)一毛一样

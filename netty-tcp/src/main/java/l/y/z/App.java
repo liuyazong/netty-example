@@ -15,7 +15,10 @@ import lombok.extern.slf4j.Slf4j;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -33,7 +36,7 @@ public class App {
 
         //构建ServerBootstrap实例
         ServerBootstrap bootstrap = new ServerBootstrap()
-                .group(new NioEventLoopGroup(1), new NioEventLoopGroup())
+                .group(new NioEventLoopGroup(), new NioEventLoopGroup())
                 .channel(NioServerSocketChannel.class)
                 .option(ChannelOption.SO_BACKLOG, 2 << 9)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
@@ -43,6 +46,7 @@ public class App {
                     @Override
                     protected void initChannel(Channel ch) throws Exception {
                         ch.pipeline()
+                                .addLast(new LoggingHandler(LogLevel.DEBUG))
                                 .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 2, 0, 2))
                                 .addLast(new StringDecoder(Charset.defaultCharset()))
                                 .addLast(new LengthFieldPrepender(2, 0))
@@ -51,6 +55,23 @@ public class App {
 
                                     @Override
                                     protected void channelRead0(ChannelHandlerContext ctx, String msg) throws Exception {
+
+                                        new Thread(() -> {
+                                            try {
+                                                Object o = ctx.channel().eventLoop().invokeAny(Arrays.asList(new Callable<Object>() {
+                                                    @Override
+                                                    public Object call() throws Exception {
+                                                        return "invokeAny";
+                                                    }
+                                                }));
+                                                System.err.println(o);
+                                            } catch (InterruptedException e) {
+                                                e.printStackTrace();
+                                            } catch (ExecutionException e) {
+                                                e.printStackTrace();
+                                            }
+                                        }).start();
+
                                         log.info("received msg: {}", msg);
                                         String result = executorService.submit(() -> {
                                             String s = new StringBuffer(msg).reverse().toString();
@@ -67,34 +88,38 @@ public class App {
                     }
                 });
 
-        //添加JVM回调，在JVM停止允许时（非强制停止，如Unix/Linux的kill -9），关闭你所创建的EventLoopGroup
+        //添加JVM回调，在JVM停止时（非强制停止，如Unix/Linux的kill -9），关闭你所创建的EventLoopGroup
         Runtime.getRuntime()
-                .addShutdownHook(new Thread(() -> {
-                    try {
-                        EventLoopGroup childGroup = bootstrap.config().childGroup();
-                        if (!childGroup.isShuttingDown() && !childGroup.isShutdown() && !childGroup.isTerminated()
-                                && childGroup.shutdownGracefully()
-                                .addListener(future -> {
-                                    log.info("childGroup shutdown {}", future.isSuccess());
-                                })
-                                .await()
-                                .isSuccess()) {
-                            log.info("childGroup shutdown at {}", new Date());
-                        }
-                        EventLoopGroup parentGroup = bootstrap.config().group();
-                        if (!parentGroup.isShuttingDown() && !parentGroup.isShutdown() && !parentGroup.isTerminated()
-                                && parentGroup.shutdownGracefully()
-                                .addListener(future -> {
-                                    log.info("parentGroup shutdown {}", future.isSuccess());
-                                })
-                                .await()
-                                .isSuccess()) {
-                            log.info("parentGroup shutdown at {}", new Date());
-                        }
-                    } catch (Exception e) {
-                        log.error("shutdown error", e);
-                    }
-                }, "ShutdownHook"));
+                .addShutdownHook(
+                        new Thread(
+                                () -> {
+                                    try {
+                                        EventLoopGroup childGroup = bootstrap.config().childGroup();
+                                        if (!childGroup.isShuttingDown() && !childGroup.isShutdown() && !childGroup.isTerminated()
+                                                && childGroup.shutdownGracefully()
+                                                .addListener(future -> {
+                                                    log.info("childGroup shutdown {}", future.isSuccess());
+                                                })
+                                                .await()
+                                                .isSuccess()) {
+                                            log.info("childGroup shutdown at {}", new Date());
+                                        }
+                                        EventLoopGroup parentGroup = bootstrap.config().group();
+                                        if (!parentGroup.isShuttingDown() && !parentGroup.isShutdown() && !parentGroup.isTerminated()
+                                                && parentGroup.shutdownGracefully()
+                                                .addListener(future -> {
+                                                    log.info("parentGroup shutdown {}", future.isSuccess());
+                                                })
+                                                .await()
+                                                .isSuccess()) {
+                                            log.info("parentGroup shutdown at {}", new Date());
+                                        }
+                                    } catch (Exception e) {
+                                        log.error("shutdown error", e);
+                                    }
+                                },
+                                "ShutdownHook")
+                );
 
         String inetHost = InetAddress.getLocalHost().getHostAddress();
         int inetPort = 8888;
