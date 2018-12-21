@@ -1458,7 +1458,9 @@ io.netty.channel.nio.AbstractNioChannel.doBeginRead
 
 到这里地址绑定算完事了。
 
-# processSelectedKeys
+## 处理客户端链接 
+
+processSelectedKeys
 
 NioEventLoop的run方法调用了这个方法。
 
@@ -1681,3 +1683,71 @@ readBuf里实际上存的时NioSocketChannel对象，它包装了Java Nio的Sock
         }
 
 childGroup.register(child)这里跟前面的config().group().register(channel)一毛一样
+
+## 读取客户端数据
+
+还是这个方法processSelectedKey(k, (AbstractNioChannel) a);
+
+当有OP_READ事件时调用了unsafe.read();
+
+
+    @Override
+    public final void read() {
+        final ChannelConfig config = config();
+        if (shouldBreakReadReady(config)) {
+            clearReadPending();
+            return;
+        }
+        final ChannelPipeline pipeline = pipeline();
+        final ByteBufAllocator allocator = config.getAllocator();
+        final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
+        allocHandle.reset(config);
+
+        ByteBuf byteBuf = null;
+        boolean close = false;
+        try {
+            do {
+                byteBuf = allocHandle.allocate(allocator);
+                allocHandle.lastBytesRead(doReadBytes(byteBuf));
+                if (allocHandle.lastBytesRead() <= 0) {
+                    // nothing was read. release the buffer.
+                    byteBuf.release();
+                    byteBuf = null;
+                    close = allocHandle.lastBytesRead() < 0;
+                    if (close) {
+                        // There is nothing left to read as we received an EOF.
+                        readPending = false;
+                    }
+                    break;
+                }
+
+                allocHandle.incMessagesRead(1);
+                readPending = false;
+                pipeline.fireChannelRead(byteBuf);
+                byteBuf = null;
+            } while (allocHandle.continueReading());
+
+            allocHandle.readComplete();
+            pipeline.fireChannelReadComplete();
+
+            if (close) {
+                closeOnRead(pipeline);
+            }
+        } catch (Throwable t) {
+            handleReadException(pipeline, byteBuf, t, close, allocHandle);
+        } finally {
+            // Check if there is a readPending which was not processed yet.
+            // This could be for two reasons:
+            // * The user called Channel.read() or ChannelHandlerContext.read() in channelRead(...) method
+            // * The user called Channel.read() or ChannelHandlerContext.read() in channelReadComplete(...) method
+            //
+            // See https://github.com/netty/netty/issues/2254
+            if (!readPending && !config.isAutoRead()) {
+                removeReadOp();
+            }
+        }
+    }
+
+## 写入客户端数据
+
+当有OP_WRITE事件时调用ch.unsafe().forceFlush();方法。
