@@ -17,8 +17,7 @@ import org.junit.Test;
 
 import java.net.InetAddress;
 import java.nio.charset.Charset;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 /**
  * author: liuyazong <br>
@@ -39,7 +38,7 @@ public class AppTest {
 
         for (int i = 0; i < 1; i++) {
             int finalI = i;
-            executorService.execute(()-> {
+            executorService.execute(() -> {
                 try {
                     test(finalI);
                 } catch (Exception e) {
@@ -115,7 +114,7 @@ public class AppTest {
                     .sync();
 
 
-             {
+            {
                 String arg = String.format("%s * %s = %s", i, i, i * i);
                 channelFuture.channel()
                         .writeAndFlush(arg)

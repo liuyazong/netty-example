@@ -155,12 +155,16 @@ Netty的Reactor线程模型也是在这里实现的。
 
 以线程池最核心的execute方法为例。
     
+io.netty.util.concurrent.AbstractEventExecutorGroup.execute
+
     @Override
     public void execute(Runnable command) {
         next().execute(command);
     }
 
 next方法在MultithreadEventExecutorGroup中实现。
+
+io.netty.util.concurrent.MultithreadEventExecutorGroup.next
 
     @Override
     public EventExecutor next() {
@@ -175,7 +179,8 @@ next方法在MultithreadEventExecutorGroup中实现。
 
 再来看一下前面构造NioEventLoopGroup实例时调用的newChild方法
 
-    # NioEventLoopGroup.newChild
+io.netty.channel.nio.NioEventLoopGroup.newChild
+
     @Override
     protected EventLoop newChild(Executor executor, Object... args) throws Exception {
         return new NioEventLoop(this, executor, (SelectorProvider) args[0],
@@ -235,6 +240,8 @@ next方法在MultithreadEventExecutorGroup中实现。
     
 看看它的execute方法，这个方法留在后面进行说明。
 
+io.netty.util.concurrent.SingleThreadEventExecutor.execute
+
     @Override
     public void execute(Runnable task) {
         if (task == null) {
@@ -292,6 +299,8 @@ wakeup方法在其子类NioEventLoop中进行了重写
 Netty Server端的启动可以使用AbstractBootstrap类的bind方法的几个重载方法来执行。
 以AbstractBootstrap.bind(SocketAddress localAddress)来说明。
 
+io.netty.bootstrap.AbstractBootstrap.bind(java.net.SocketAddress)
+
     public ChannelFuture bind(SocketAddress localAddress) {
         validate();
         if (localAddress == null) {
@@ -301,6 +310,8 @@ Netty Server端的启动可以使用AbstractBootstrap类的bind方法的几个�
     }
 
 它调用了doBind方法。
+
+io.netty.bootstrap.AbstractBootstrap.doBind
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
         final ChannelFuture regFuture = initAndRegister();
@@ -341,6 +352,8 @@ Netty Server端的启动可以使用AbstractBootstrap类的bind方法的几个�
 该方法主要分为两个功能。主要看initAndRegister(...)和doBind0(...)两个方法。
 
 ### initAndRegister
+
+io.netty.bootstrap.AbstractBootstrap.initAndRegister
 
     final ChannelFuture initAndRegister() {
         Channel channel = null;
@@ -500,7 +513,7 @@ channel、pipeline互相持有对方的一个引用。
 
 ### 初始化channel
 
-ServerBootstrap.init(channel);
+io.netty.bootstrap.ServerBootstrap.init
 
     @Override
     void init(Channel channel) throws Exception {
@@ -1685,6 +1698,13 @@ readBuf里实际上存的时NioSocketChannel对象，它包装了Java Nio的Sock
 childGroup.register(child)这里跟前面的config().group().register(channel)一毛一样
 
 ## 读取客户端数据
+
+
+new NioSocketChannel(this, ch)
+
+它的unsafe是NioSocketChannelUnsafe的实例，pipeline还是DefaultChannelPipeline的实例。
+
+
 
 还是这个方法processSelectedKey(k, (AbstractNioChannel) a);
 
