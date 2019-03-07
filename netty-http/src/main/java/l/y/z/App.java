@@ -1,12 +1,15 @@
 package l.y.z;
 
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.http.*;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import lombok.extern.slf4j.Slf4j;
 
@@ -27,13 +30,14 @@ public class App {
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(new NioEventLoopGroup(1), new NioEventLoopGroup(Runtime.getRuntime().availableProcessors() << 2))
                 .option(ChannelOption.SO_BACKLOG, 1024)
+                .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .channel(NioServerSocketChannel.class)
                 .localAddress("localhost", port)
                 .childHandler(
                         new ChannelInitializer<NioSocketChannel>() {
                             @Override
                             protected void initChannel(NioSocketChannel ch) {
-                                ch.pipeline()
+                                ch.pipeline().addLast(LoggingHandler.class.getName(),new LoggingHandler(LogLevel.DEBUG))
                                         // .addLast(HttpRequestDecoder.class.getName(), new HttpRequestDecoder())
                                         // .addLast(HttpResponseEncoder.class.getName(), new
                                         // HttpResponseEncoder())
@@ -63,13 +67,15 @@ public class App {
                                                                         "path: %s\nparameters: %s\ncontent: %s\ncurrent time: %s",
                                                                         path, parameters, content, new Date());
                                                         log.info("\n{}", body);
+                                                        ByteBuf byteBuf = Unpooled.copiedBuffer(body, Charset.defaultCharset());
                                                         DefaultFullHttpResponse response =
                                                                 new DefaultFullHttpResponse(
                                                                         HttpVersion.HTTP_1_1,
                                                                         HttpResponseStatus.OK,
-                                                                        Unpooled.copiedBuffer(body, Charset.defaultCharset()));
+                                                                        byteBuf);
                                                         response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-                                                        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+                                                        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, byteBuf.readableBytes());
+                                                        ctx.writeAndFlush(response);//.addListener(ChannelFutureListener.CLOSE);
                                                     }
                                                 });
                             }

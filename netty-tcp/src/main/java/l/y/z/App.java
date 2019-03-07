@@ -17,6 +17,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -41,12 +42,12 @@ public class App {
                 .option(ChannelOption.SO_BACKLOG, 2 << 9)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
-                .handler(new LoggingHandler(LogLevel.DEBUG))
+                //.handler(new LoggingHandler(LogLevel.ERROR))
                 .childHandler(new ChannelInitializer<Channel>() {
                     @Override
                     protected void initChannel(Channel ch) throws Exception {
                         ch.pipeline()
-                                .addLast(new LoggingHandler(LogLevel.DEBUG))
+                                //.addLast(new LoggingHandler(LogLevel.ERROR))
                                 .addLast(new LengthFieldBasedFrameDecoder(1024, 0, 2, 0, 2))
                                 .addLast(new StringDecoder(Charset.defaultCharset()))
                                 .addLast(new LengthFieldPrepender(2, 0))
@@ -55,27 +56,11 @@ public class App {
 
                                     @Override
                                     protected void channelRead0(ChannelHandlerContext ctx, String msg) throws Exception {
-
-                                        new Thread(() -> {
-                                            try {
-                                                Object o = ctx.channel().eventLoop().invokeAny(Arrays.asList(new Callable<Object>() {
-                                                    @Override
-                                                    public Object call() throws Exception {
-                                                        return "invokeAny";
-                                                    }
-                                                }));
-                                                System.err.println(o);
-                                            } catch (InterruptedException e) {
-                                                e.printStackTrace();
-                                            } catch (ExecutionException e) {
-                                                e.printStackTrace();
-                                            }
-                                        }).start();
-
                                         log.info("received msg: {}", msg);
                                         String result = executorService.submit(() -> {
-                                            String s = new StringBuffer(msg).reverse().toString();
-                                            log.info("handle msg: {}, result: {}", msg, s);
+                                            String s = msg;
+                                            //log.info("handle msg: {}, result: {}", msg, s);
+                                            Thread.sleep(new Random().nextInt(2000));
                                             return s;
                                         }).get();
 
